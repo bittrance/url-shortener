@@ -8,10 +8,8 @@ edition = "2021"
 [dependencies]
 actix-web = "4"
 anyhow = "1"
-azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust", rev = "39499f4b" }
-azure_identity = { git = "https://github.com/Azure/azure-sdk-for-rust", rev = "39499f4b" }
-azure_data_cosmos = { git = "https://github.com/Azure/azure-sdk-for-rust", rev = "39499f4b" }
-azure_svc_monitor = { git = "https://github.com/Azure/azure-sdk-for-rust", rev = "39499f4b" }
 chrono = "0.4"
+dashmap = "5.3"
+rand = "0.8"
 reqwest = { version = "0.11", features = ["json"] }
-serde = "1"
+serde = { version = "1", features = ["derive"] }
