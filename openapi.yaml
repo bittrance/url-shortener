@@ -1,0 +1,74 @@
+openapi: "3.0.1"
+info:
+  title: URL Shortener API
+  version: "1.0"
+  description: >
+    This API is a demonstration of a highly scalable URL shortener
+    implemented in Rust. It provides an admin API and the "bouncepoint"
+    which redirects the user to the target URL.
+servers:
+  - url: https://url-shortener
+components:
+  schemas:
+    Registration:
+      type: object
+      properties:
+        target: 
+          type: string
+          description: The target URL that that you want a short URL to redirect to.
+      required:
+        - target
+      example:
+        target: https://example.com/
+    RegistrationResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: The token for this target (i.e. the path element of the URL).
+        target: 
+          type: string
+          description: The target you passed in.
+      required:
+        - token
+        - target
+      example:
+        token: abcdefgh
+        target: https://example.com/
+paths:
+  /admin/tokens:
+    post:
+      summary: Request a new "token" for a target URL.
+      operationId: RegisterTarget
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/Registration"
+      responses:
+        "201":
+          description: The target was successfully registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegistrationResponse"
+  /{token}:
+    get:
+      summary: Request redirection to the target site.
+      operationId: RequestRedirect
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "307":
+          description: Redirection to the target URL.
+          headers:
+            Locations:
+              description: The target URL.
+              schema:
+                type: string
+        "404":
+          description: This token is not known.

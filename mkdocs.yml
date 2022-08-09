@@ -1,0 +1,3 @@
+site_name: url-shortener
+nav:
+  - Home: index.md

@@ -1,0 +1,20 @@
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: url-shortener
+  description: The URL shortener API
+  tags:
+    - store
+    - rest
+  annotations:
+    backstage.io/techdocs-ref: dir:/
+  links:
+    - url: https://github.com/bittrance/url-shortener
+      title: GitHub Repo
+      icon: github
+spec:
+  type: openapi
+  lifecycle: experimental
+  owner: bittrance@gmail.com
+  definition:
+    $text: ./openapi.yaml
