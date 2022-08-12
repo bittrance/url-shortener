@@ -12,6 +12,10 @@ use std::sync::{Arc, atomic::AtomicU64};
 
 type Cache = Arc<DashMap<String, Entry>>;
 
+struct Config {
+    bind_address: String,
+}
+
 struct Entry {
     target: String,
     counter: AtomicU64,
@@ -72,14 +76,18 @@ async fn create(
     })
 }
 
+#[allow(clippy::or_fun_call)]
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    let config = Config {
+        bind_address: std::env::var("BIND_ADDRESS").unwrap_or("0.0.0.0".to_owned())
+    };
     let store: Cache = Arc::new(DashMap::with_capacity(1000));
     HttpServer::new(move || {
         let data = web::Data::new(Arc::clone(&store));
         App::new().app_data(data).service(redirect).service(create)
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind((config.bind_address, 8080))?
     .run()
     .await
 }
