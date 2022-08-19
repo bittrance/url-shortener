@@ -16,3 +16,13 @@ The Dockerfile contains the full build instructions:
 ```
 docker build -t ghcr.io/bittrance/url-shortener .
 ```
+
+## Database
+
+```sql
+CREATE TABLE tokens (
+    token CHAR(8) UNIQUE NOT NULL,
+    target VARCHAR(1024) NOT NULL,
+    PRIMARY KEY(token)
+);
+```

@@ -8,12 +8,24 @@ use actix_web::{
 use dashmap::DashMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, atomic::AtomicU64};
+use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
+use std::error::Error;
+use std::sync::{atomic::AtomicU64, Arc};
 
-type Cache = Arc<DashMap<String, Entry>>;
+type Cache = DashMap<String, Entry>;
 
 struct Config {
     bind_address: String,
+    postgres_host: String,
+    postgres_port: u16,
+    postgres_db: String,
+    postgres_username: String,
+    postgres_password: String,
+}
+
+struct State {
+    cache: Cache,
+    pool: Pool<Postgres>,
 }
 
 struct Entry {
@@ -23,22 +35,47 @@ struct Entry {
 
 impl From<Registration> for Entry {
     fn from(reg: Registration) -> Self {
-        Entry { target: reg.target, counter: AtomicU64::new(0) }
+        Entry {
+            target: reg.target,
+            counter: AtomicU64::new(0),
+        }
     }
 }
 
 #[get("/{token}")]
-async fn redirect(
-    token: web::Path<String>,
-    store: web::Data<Cache>,
-) -> impl Responder {
-    if let Some(entry) = store.get(token.as_str()) {
-        entry.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+async fn redirect(token: web::Path<String>, state: web::Data<Arc<State>>) -> impl Responder {
+    if let Some(entry) = state.cache.get(token.as_str()) {
+        entry
+            .counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         HttpResponse::TemporaryRedirect()
             .append_header((header::LOCATION, entry.target.to_owned()))
             .finish()
     } else {
-        HttpResponse::NotFound().finish()
+        let result: Result<Option<(String,)>, sqlx::Error> =
+            sqlx::query_as("SELECT target FROM tokens WHERE token = $1")
+                .bind(token.as_str())
+                .fetch_optional(&state.pool)
+                .await;
+        match result {
+            Ok(Some((target,))) => {
+                state.cache.insert(
+                    token.to_owned(),
+                    Entry {
+                        target: target.clone(),
+                        counter: AtomicU64::new(1),
+                    },
+                );
+                HttpResponse::TemporaryRedirect()
+                    .append_header((header::LOCATION, target))
+                    .finish()
+            }
+            Ok(None) => HttpResponse::NotFound().finish(),
+            Err(err) => {
+                eprintln!("Error: {}", err);
+                HttpResponse::InternalServerError().finish()
+            }
+        }
     }
 }
 
@@ -54,37 +91,67 @@ struct RegistrationResponse {
 }
 
 #[post("/admin/tokens")]
-async fn create(
-    registration: Json<Registration>,
-    store: web::Data<Cache>,
-) -> impl Responder {
+async fn create(registration: Json<Registration>, state: web::Data<Arc<State>>) -> impl Responder {
     let token = rand::thread_rng()
         .sample_iter(&rand::distributions::Alphanumeric)
         .take(8)
         .map(char::from)
         .collect::<String>()
         .to_lowercase();
-    if let Some(_) = store.get(token.as_str()) {
+    if state.cache.get(token.as_str()).is_some() {
+        return HttpResponse::InternalServerError().finish();
+    }
+    let res: Result<Option<(String,)>, sqlx::Error> =
+        sqlx::query_as("INSERT INTO tokens (token, target) VALUES ($1, $2)")
+            .bind(token.as_str())
+            .bind(registration.target.as_str())
+            .fetch_optional(&state.pool)
+            .await;
+    if let Err(err) = res {
+        eprint!("Error writing to db: {}", err);
         return HttpResponse::InternalServerError().finish();
     }
     let target = registration.target.clone();
     let entry = Entry::from(registration.into_inner());
-    store.insert(token.clone(), entry);
-    HttpResponse::Created().json(RegistrationResponse {
-        token,
-        target,
-    })
+    state.cache.insert(token.clone(), entry);
+    HttpResponse::Created().json(RegistrationResponse { token, target })
+}
+
+fn erase_err<T: 'static + Error>(err: T) -> Box<dyn Error> {
+    Box::new(err)
 }
 
 #[allow(clippy::or_fun_call)]
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let config = Config {
-        bind_address: std::env::var("BIND_ADDRESS").unwrap_or("0.0.0.0".to_owned())
+        bind_address: std::env::var("BIND_ADDRESS").unwrap_or("0.0.0.0".to_owned()),
+        postgres_host: std::env::var("POSTGRES_HOST").unwrap_or("127.0.0.1".to_owned()),
+        postgres_port: std::env::var("POSTGRES_PORT")
+            .map_err(erase_err)
+            .and_then(|p| p.parse().map_err(erase_err))
+            .unwrap_or(5432),
+        postgres_db: std::env::var("POSTGRES_DB").unwrap_or("urlshortener".to_owned()),
+        postgres_username: std::env::var("POSTGRES_USERNAME").unwrap_or("url-shortener".to_owned()),
+        postgres_password: std::env::var("POSTGRES_PASSWORD")
+            .expect("Please set env var POSTGRES_PASSWORD"),
     };
-    let store: Cache = Arc::new(DashMap::with_capacity(1000));
+    let cache: Cache = DashMap::with_capacity(1000);
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&format!(
+            "postgres://{}:{}@{}:{}/{}",
+            config.postgres_username,
+            config.postgres_password,
+            config.postgres_host,
+            config.postgres_port,
+            config.postgres_db
+        ))
+        .await
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+    let state = Arc::new(State { cache, pool });
     HttpServer::new(move || {
-        let data = web::Data::new(Arc::clone(&store));
+        let data = web::Data::new(Arc::clone(&state));
         App::new().app_data(data).service(redirect).service(create)
     })
     .bind((config.bind_address, 8080))?
