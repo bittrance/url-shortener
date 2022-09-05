@@ -25,4 +25,11 @@ CREATE TABLE tokens (
     target VARCHAR(1024) NOT NULL,
     PRIMARY KEY(token)
 );
+
+CREATE TABLE counts (
+    token CHAR(8),
+    target VARCHAR(1024),
+    timestamp BIGINT,
+    count BIGINT
+);
 ```

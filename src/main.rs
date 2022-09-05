@@ -6,11 +6,17 @@ use actix_web::{
     App, HttpResponse, HttpServer, Responder,
 };
 use dashmap::DashMap;
+use futures::{future, FutureExt};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
-use std::error::Error;
-use std::sync::{atomic::AtomicU64, Arc};
+use std::{
+    error::Error,
+    sync::{atomic::AtomicI64, atomic::Ordering, Arc},
+    time::Duration,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tokio::time;
 
 type Cache = DashMap<String, Entry>;
 
@@ -30,14 +36,14 @@ struct State {
 
 struct Entry {
     target: String,
-    counter: AtomicU64,
+    counter: AtomicI64,
 }
 
 impl From<Registration> for Entry {
     fn from(reg: Registration) -> Self {
         Entry {
             target: reg.target,
-            counter: AtomicU64::new(0),
+            counter: AtomicI64::new(0),
         }
     }
 }
@@ -63,7 +69,7 @@ async fn redirect(token: web::Path<String>, state: web::Data<Arc<State>>) -> imp
                     token.to_owned(),
                     Entry {
                         target: target.clone(),
-                        counter: AtomicU64::new(1),
+                        counter: AtomicI64::new(1),
                     },
                 );
                 HttpResponse::TemporaryRedirect()
@@ -121,6 +127,42 @@ fn erase_err<T: 'static + Error>(err: T) -> Box<dyn Error> {
     Box::new(err)
 }
 
+async fn setup_cache_maintainer(
+    state: Arc<State>,
+) -> Result<std::convert::Infallible, std::io::Error> {
+    loop {
+        time::sleep(Duration::from_millis(10000)).await;
+        for entry in state.cache.iter() {
+            let count = entry.counter.load(Ordering::Relaxed);
+            if count == 0 {
+                continue;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+            let res: Result<Option<(String,)>, sqlx::Error> = sqlx::query_as(
+                "INSERT INTO counts (token, target, timestamp, count) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(entry.key())
+            .bind(&entry.target)
+            .bind(ts)
+            .bind(count)
+            .fetch_optional(&state.pool)
+            .await;
+            if let Err(err) = res {
+                eprint!("Error writing to db: {}", err);
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, err));
+            }
+            entry
+                .counter
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some(v - count))
+                .unwrap();
+        }
+    }
+}
+
 #[allow(clippy::or_fun_call)]
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -150,11 +192,15 @@ async fn main() -> std::io::Result<()> {
         .await
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
     let state = Arc::new(State { cache, pool });
-    HttpServer::new(move || {
-        let data = web::Data::new(Arc::clone(&state));
-        App::new().app_data(data).service(redirect).service(create)
-    })
-    .bind((config.bind_address, 8080))?
-    .run()
+    future::try_select(
+        Box::pin(setup_cache_maintainer(Arc::clone(&state))),
+        HttpServer::new(move || {
+            let data = web::Data::new(Arc::clone(&state));
+            App::new().app_data(data).service(redirect).service(create)
+        })
+        .bind((config.bind_address, 8080))?
+        .run(),
+    )
+    .map(|_| Ok(()))
     .await
 }
