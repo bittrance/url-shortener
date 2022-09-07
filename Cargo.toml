@@ -11,8 +11,10 @@ anyhow = "1"
 chrono = "0.4"
 dashmap = "5.3"
 futures = { version = "0.3" }
+log = "0.4"
 rand = "0.8"
 reqwest = { version = "0.11", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 sqlx = { version = "0.6", features = ["postgres", "runtime-actix-rustls"] }
+stderrlog = "0.5"
 tokio = { version = "1", features = ["macros", "time"] }

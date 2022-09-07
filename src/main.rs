@@ -7,13 +7,14 @@ use actix_web::{
 };
 use dashmap::DashMap;
 use futures::{future, FutureExt};
+use log::{error, warn, Level};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use std::{
     error::Error,
     sync::{atomic::AtomicI64, atomic::Ordering, Arc},
-    time::Duration,
+    time::{Duration, Instant},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::time;
@@ -119,6 +120,7 @@ async fn create(registration: Json<Registration>, state: web::Data<Arc<State>>) 
         return HttpResponse::InternalServerError().finish();
     }
     let target = registration.target.clone();
+    warn!("Registered token [token={}, target={}]", token, target);
     let entry = Entry::from(registration.into_inner());
     state.cache.insert(token.clone(), entry);
     HttpResponse::Created().json(RegistrationResponse { token, target })
@@ -133,6 +135,7 @@ async fn setup_cache_maintainer(
 ) -> Result<std::convert::Infallible, std::io::Error> {
     loop {
         time::sleep(Duration::from_millis(10000)).await;
+        let start = Instant::now();
         for entry in state.cache.iter() {
             let count = entry.counter.load(Ordering::Relaxed);
             if count == 0 {
@@ -153,7 +156,7 @@ async fn setup_cache_maintainer(
             .fetch_optional(&state.pool)
             .await;
             if let Err(err) = res {
-                eprint!("Error writing to db: {}", err);
+                error!("Error writing to db: {}", err);
                 return Err(std::io::Error::new(std::io::ErrorKind::Other, err));
             }
             entry
@@ -161,6 +164,11 @@ async fn setup_cache_maintainer(
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some(v - count))
                 .unwrap();
         }
+        warn!(
+            "Hit reports [entries={}, elapsed={}us]",
+            state.cache.len(),
+            start.elapsed().as_micros()
+        );
     }
 }
 
@@ -183,6 +191,15 @@ async fn main() -> std::io::Result<()> {
             .and_then(|n| n.parse().map_err(erase_err))
             .unwrap_or(5),
     };
+    stderrlog::new()
+        .timestamp(stderrlog::Timestamp::Off)
+        .verbosity(Level::Warn)
+        .init()
+        .expect("Failed to initialize stderr logging");
+    warn!(
+        "url-shortener starting [env={:?}]",
+        std::env::vars().collect::<Vec<(String, String)>>()
+    );
     let cache: Cache = DashMap::with_capacity(1000);
     let pool = PgPoolOptions::new()
         .max_connections(config.pool_size)
@@ -207,5 +224,9 @@ async fn main() -> std::io::Result<()> {
         .run(),
     )
     .map(|_| Ok(()))
+    .then(|r| {
+        warn!("url-shortener stopping");
+        future::ready(r)
+    })
     .await
 }
