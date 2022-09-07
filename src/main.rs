@@ -27,6 +27,7 @@ struct Config {
     postgres_db: String,
     postgres_username: String,
     postgres_password: String,
+    pool_size: u32,
 }
 
 struct State {
@@ -177,10 +178,14 @@ async fn main() -> std::io::Result<()> {
         postgres_username: std::env::var("POSTGRES_USERNAME").unwrap_or("url-shortener".to_owned()),
         postgres_password: std::env::var("POSTGRES_PASSWORD")
             .expect("Please set env var POSTGRES_PASSWORD"),
+        pool_size: std::env::var("POOL_SIZE")
+            .map_err(erase_err)
+            .and_then(|n| n.parse().map_err(erase_err))
+            .unwrap_or(5),
     };
     let cache: Cache = DashMap::with_capacity(1000);
     let pool = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(config.pool_size)
         .connect(&format!(
             "postgres://{}:{}@{}:{}/{}",
             config.postgres_username,
